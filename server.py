@@ -1,42 +1,44 @@
 from flask import Flask, request, jsonify
 import smtplib
 import os
+import json
 from email.mime.text import MIMEText
 from dotenv import load_dotenv
 import logging
 
-# Configurar el logging para ver los mensajes en Render
+# Configuración de logs
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Cargar variables de entorno (solo funciona en local, Render las manejará directamente)
+# Cargar variables de entorno
 load_dotenv()
-
-# Obtener credenciales de correo de las variables de entorno
-# Render nos permitirá configurar EMAIL_USER y EMAIL_PASS de manera segura.
-#
-# Importante: Estas credenciales son del correo que USARÁ EL SERVIDOR PARA ENVIAR
-# los correos. El correo del destinatario (el de tu jefe) se establece más abajo.
-#
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
+CONFIG_KEY = os.getenv("CONFIG_KEY", "12345")  # clave de seguridad para cambiar el correo
 
-# Verificar si las credenciales de correo existen
-if not EMAIL_USER or not EMAIL_PASS:
-    logging.error("Las variables de entorno EMAIL_USER o EMAIL_PASS no están configuradas.")
-    # El servidor continuará, pero el envío de correos fallará si no están configuradas en Render.
+# Archivo para guardar el correo destino
+EMAIL_CONFIG_FILE = "email_config.json"
 
+# Funciones para leer/guardar correo destino
+def get_email_destino():
+    if os.path.exists(EMAIL_CONFIG_FILE):
+        with open(EMAIL_CONFIG_FILE, "r") as f:
+            data = json.load(f)
+            return data.get("email", "eduardo.rangel@loomsys.com.mx")
+    return "eduardo.rangel@loomsys.com.mx"
+
+def set_email_destino(email):
+    with open(EMAIL_CONFIG_FILE, "w") as f:
+        json.dump({"email": email}, f)
+
+# Inicializar Flask
 app = Flask(__name__)
 
-# --- Función para enviar correo ---
+# Función para enviar correo
 def enviar_correo(numero, texto, destino, fecha_recepcion=None, numero_destino_netelip=None):
-    """
-    Envía un correo electrónico con la respuesta del SMS.
-    Retorna True si el envío fue exitoso, False en caso contrario.
-    """
     if not EMAIL_USER or not EMAIL_PASS:
-        logging.error("No se puede enviar correo: Credenciales de correo no configuradas.")
+        logging.error("Credenciales de correo no configuradas.")
         return False
-        
+
     asunto = f"📩 Respuesta SMS de {numero}"
     cuerpo = f"Mensaje recibido desde el número {numero}:\n\n"
     if fecha_recepcion:
@@ -54,42 +56,49 @@ def enviar_correo(numero, texto, destino, fecha_recepcion=None, numero_destino_n
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, destino, msg.as_string())
-        logging.info(f"Correo enviado con éxito a {destino} desde {numero}")
+        logging.info(f"Correo enviado a {destino}")
         return True
     except Exception as e:
-        logging.error(f"Ocurrió un error al enviar el correo: {e}")
+        logging.error(f"Error enviando correo: {e}")
         return False
 
-# --- Endpoint para el webhook ---
+# Endpoint para recibir SMS desde Netelip
 @app.route("/respuesta-sms", methods=["POST"])
 def recibir_respuesta():
-    logging.info("Petición POST recibida en /respuesta-sms")
-
-    # Obtener los datos del webhook de Netelip (form-data)
     fecha_recepcion = request.form.get("date")
     numero_remitente = request.form.get("from")
     numero_destino_netelip = request.form.get("destination")
     texto_mensaje = request.form.get("message")
 
-    logging.info(f"Datos recibidos: From={numero_remitente}, Message={texto_mensaje}")
-
-    correo_destino = request.args.get("email")
-    if not correo_destino:
-        logging.warning("No se encontró el parámetro 'email' en la URL. Usando correo por defecto.")
-        # Usamos el correo de tu jefe como valor por defecto si no se especifica otro
-        correo_destino = "eduardo.rangel@loomsys.com.mx"
+    logging.info(f"SMS recibido: From={numero_remitente}, Msg={texto_mensaje}")
 
     if not numero_remitente or not texto_mensaje:
-        logging.warning("Datos incompletos en el webhook. 'from' o 'message' faltan.")
         return jsonify({"status": "error", "message": "Datos incompletos"}), 400
 
-    success = enviar_correo(numero_remitente, texto_mensaje, correo_destino, fecha_recepcion, numero_destino_netelip)
+    correo_destino = get_email_destino()
 
-    if success:
-        return jsonify({"status": "ok", "message": "Respuesta reenviada a correo"}), 200
+    if enviar_correo(numero_remitente, texto_mensaje, correo_destino, fecha_recepcion, numero_destino_netelip):
+        return jsonify({"status": "ok", "message": f"Respuesta reenviada a {correo_destino}"}), 200
     else:
-        return jsonify({"status": "error", "message": "Fallo al reenviar respuesta a correo"}), 500
+        return jsonify({"status": "error", "message": "Fallo al enviar correo"}), 500
+
+# Endpoint para cambiar el correo destino
+@app.route("/config-email", methods=["POST"])
+def configurar_email():
+    auth_key = request.args.get("key")
+    if auth_key != CONFIG_KEY:
+        return jsonify({"status": "error", "message": "No autorizado"}), 403
+
+    data = request.get_json()
+    nuevo_email = data.get("email")
+
+    if not nuevo_email:
+        return jsonify({"status": "error", "message": "Falta el campo 'email'"}), 400
+
+    set_email_destino(nuevo_email)
+    logging.info(f"Correo destino actualizado a: {nuevo_email}")
+    return jsonify({"status": "ok", "message": f"Correo actualizado a {nuevo_email}"}), 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host="0.0.0.0", port=port)
