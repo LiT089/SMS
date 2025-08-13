@@ -5,23 +5,34 @@ import os
 from dotenv import load_dotenv
 import logging
 
-# Cargar variables de entorno
+# --- Configuración ---
 load_dotenv()
 
-EMAIL_USER = os.getenv("EMAIL_USER")  # Tu correo remitente (Gmail)
-EMAIL_PASS = os.getenv("EMAIL_PASS")  # Contraseña de aplicación Gmail
+EMAIL_USER = os.getenv("EMAIL_USER")  # Tu correo remitente
+EMAIL_PASS = os.getenv("EMAIL_PASS")  # Contraseña o App Password de Gmail
+CORREO_FILE = "correo_destino.txt"
 
 logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 
-# Correo destino que podrá cambiar desde la app
-correo_destino_actual = "rangeltrejoadamarimildred@gmail.com"
+# --- Funciones ---
+def leer_correo_destino():
+    """Lee el correo destino desde archivo, si no existe usa uno por defecto."""
+    if os.path.exists(CORREO_FILE):
+        with open(CORREO_FILE, "r") as f:
+            return f.read().strip()
+    return "rangeltrejoadamarimildred@gmail.com"
 
-# Función para enviar correo
+def guardar_correo_destino(correo):
+    """Guarda el correo destino en archivo."""
+    with open(CORREO_FILE, "w") as f:
+        f.write(correo)
+
 def enviar_correo(numero, texto, destino, fecha_recepcion=None, numero_destino_netelip=None):
+    """Envía el correo con los datos recibidos del SMS."""
     if not EMAIL_USER or not EMAIL_PASS:
-        logging.error("Faltan credenciales EMAIL_USER y EMAIL_PASS")
+        logging.error("❌ Faltan credenciales EMAIL_USER y EMAIL_PASS")
         return False
 
     asunto = f"📩 Respuesta SMS de {numero}"
@@ -41,39 +52,40 @@ def enviar_correo(numero, texto, destino, fecha_recepcion=None, numero_destino_n
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, destino, msg.as_string())
-        logging.info(f"Correo enviado a {destino}")
+        logging.info(f"✅ Correo enviado a {destino}")
         return True
     except Exception as e:
-        logging.error(f"Error al enviar correo: {e}")
+        logging.error(f"❌ Error al enviar correo: {e}")
         return False
 
-# Endpoint para que la app cambie el correo destino
+# --- Endpoints ---
 @app.route("/set-email", methods=["POST"])
 def set_email():
-    global correo_destino_actual
+    """Cambia el correo destino desde la app."""
     data = request.get_json()
     nuevo_correo = data.get("email")
 
-    if not nuevo_correo:
-        return jsonify({"status": "error", "message": "Falta email"}), 400
+    if not nuevo_correo or "@" not in nuevo_correo:
+        return jsonify({"status": "error", "message": "Correo inválido"}), 400
 
-    correo_destino_actual = nuevo_correo
-    logging.info(f"Correo destino cambiado a: {correo_destino_actual}")
-    return jsonify({"status": "ok", "message": f"Correo destino actualizado a {correo_destino_actual}"}), 200
+    guardar_correo_destino(nuevo_correo)
+    logging.info(f"🔄 Correo destino cambiado a: {nuevo_correo}")
+    return jsonify({"status": "ok", "message": f"Correo destino actualizado a {nuevo_correo}"}), 200
 
-# Endpoint que Netelip usará para mandar los SMS recibidos
 @app.route("/respuesta-sms", methods=["POST"])
 def recibir_sms():
+    """Netelip envía aquí los SMS recibidos."""
     fecha = request.form.get("date")
     numero_remitente = request.form.get("from")
     numero_destino = request.form.get("destination")
     mensaje = request.form.get("message")
 
-    logging.info(f"SMS recibido de {numero_remitente}: {mensaje}")
+    logging.info(f"📥 SMS recibido de {numero_remitente}: {mensaje}")
 
     if not numero_remitente or not mensaje:
         return jsonify({"status": "error", "message": "Datos incompletos"}), 400
 
+    correo_destino_actual = leer_correo_destino()
     if enviar_correo(numero_remitente, mensaje, correo_destino_actual, fecha, numero_destino):
         return jsonify({"status": "ok", "message": "Correo reenviado"}), 200
     else:
@@ -81,8 +93,11 @@ def recibir_sms():
 
 @app.route("/", methods=["GET"])
 def home():
-    return "Servidor de recepción SMS activo", 200
+    return "🚀 Servidor de recepción SMS activo", 200
 
+# --- Inicio ---
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
+
