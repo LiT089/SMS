@@ -1,51 +1,36 @@
 from flask import Flask, request, jsonify
 import smtplib
-import os
-import json
 from email.mime.text import MIMEText
+import os
 from dotenv import load_dotenv
 import logging
 
-# Configuración de logs
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 # Cargar variables de entorno
 load_dotenv()
-EMAIL_USER = os.getenv("EMAIL_USER")
-EMAIL_PASS = os.getenv("EMAIL_PASS")
-CONFIG_KEY = os.getenv("CONFIG_KEY", "12345")  # clave de seguridad para cambiar el correo
 
-# Archivo para guardar el correo destino
-EMAIL_CONFIG_FILE = "email_config.json"
+EMAIL_USER = os.getenv("EMAIL_USER")  # Tu correo remitente (Gmail)
+EMAIL_PASS = os.getenv("EMAIL_PASS")  # Contraseña de aplicación Gmail
 
-# Funciones para leer/guardar correo destino
-def get_email_destino():
-    if os.path.exists(EMAIL_CONFIG_FILE):
-        with open(EMAIL_CONFIG_FILE, "r") as f:
-            data = json.load(f)
-            return data.get("email", "eduardo.rangel@loomsys.com.mx")
-    return "eduardo.rangel@loomsys.com.mx"
+logging.basicConfig(level=logging.INFO)
 
-def set_email_destino(email):
-    with open(EMAIL_CONFIG_FILE, "w") as f:
-        json.dump({"email": email}, f)
-
-# Inicializar Flask
 app = Flask(__name__)
+
+# Correo destino que podrá cambiar desde la app
+correo_destino_actual = "rangeltrejoadamarimildred@gmail.com"
 
 # Función para enviar correo
 def enviar_correo(numero, texto, destino, fecha_recepcion=None, numero_destino_netelip=None):
     if not EMAIL_USER or not EMAIL_PASS:
-        logging.error("Credenciales de correo no configuradas.")
+        logging.error("Faltan credenciales EMAIL_USER y EMAIL_PASS")
         return False
 
     asunto = f"📩 Respuesta SMS de {numero}"
-    cuerpo = f"Mensaje recibido desde el número {numero}:\n\n"
+    cuerpo = f"Mensaje recibido desde {numero}:\n\n"
     if fecha_recepcion:
         cuerpo += f"Fecha de recepción: {fecha_recepcion}\n"
     if numero_destino_netelip:
-        cuerpo += f"Recibido en tu número Netelip: {numero_destino_netelip}\n"
-    cuerpo += f"\nContenido del mensaje:\n{texto}"
+        cuerpo += f"Recibido en: {numero_destino_netelip}\n"
+    cuerpo += f"\nContenido:\n{texto}"
 
     msg = MIMEText(cuerpo)
     msg["Subject"] = asunto
@@ -59,45 +44,44 @@ def enviar_correo(numero, texto, destino, fecha_recepcion=None, numero_destino_n
         logging.info(f"Correo enviado a {destino}")
         return True
     except Exception as e:
-        logging.error(f"Error enviando correo: {e}")
+        logging.error(f"Error al enviar correo: {e}")
         return False
 
-# Endpoint para recibir SMS desde Netelip
+# Endpoint para que la app cambie el correo destino
+@app.route("/set-email", methods=["POST"])
+def set_email():
+    global correo_destino_actual
+    data = request.get_json()
+    nuevo_correo = data.get("email")
+
+    if not nuevo_correo:
+        return jsonify({"status": "error", "message": "Falta email"}), 400
+
+    correo_destino_actual = nuevo_correo
+    logging.info(f"Correo destino cambiado a: {correo_destino_actual}")
+    return jsonify({"status": "ok", "message": f"Correo destino actualizado a {correo_destino_actual}"}), 200
+
+# Endpoint que Netelip usará para mandar los SMS recibidos
 @app.route("/respuesta-sms", methods=["POST"])
-def recibir_respuesta():
-    fecha_recepcion = request.form.get("date")
+def recibir_sms():
+    fecha = request.form.get("date")
     numero_remitente = request.form.get("from")
-    numero_destino_netelip = request.form.get("destination")
-    texto_mensaje = request.form.get("message")
+    numero_destino = request.form.get("destination")
+    mensaje = request.form.get("message")
 
-    logging.info(f"SMS recibido: From={numero_remitente}, Msg={texto_mensaje}")
+    logging.info(f"SMS recibido de {numero_remitente}: {mensaje}")
 
-    if not numero_remitente or not texto_mensaje:
+    if not numero_remitente or not mensaje:
         return jsonify({"status": "error", "message": "Datos incompletos"}), 400
 
-    correo_destino = get_email_destino()
-
-    if enviar_correo(numero_remitente, texto_mensaje, correo_destino, fecha_recepcion, numero_destino_netelip):
-        return jsonify({"status": "ok", "message": f"Respuesta reenviada a {correo_destino}"}), 200
+    if enviar_correo(numero_remitente, mensaje, correo_destino_actual, fecha, numero_destino):
+        return jsonify({"status": "ok", "message": "Correo reenviado"}), 200
     else:
         return jsonify({"status": "error", "message": "Fallo al enviar correo"}), 500
 
-# Endpoint para cambiar el correo destino
-@app.route("/config-email", methods=["POST"])
-def configurar_email():
-    auth_key = request.args.get("key")
-    if auth_key != CONFIG_KEY:
-        return jsonify({"status": "error", "message": "No autorizado"}), 403
-
-    data = request.get_json()
-    nuevo_email = data.get("email")
-
-    if not nuevo_email:
-        return jsonify({"status": "error", "message": "Falta el campo 'email'"}), 400
-
-    set_email_destino(nuevo_email)
-    logging.info(f"Correo destino actualizado a: {nuevo_email}")
-    return jsonify({"status": "ok", "message": f"Correo actualizado a {nuevo_email}"}), 200
+@app.route("/", methods=["GET"])
+def home():
+    return "Servidor de recepción SMS activo", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
